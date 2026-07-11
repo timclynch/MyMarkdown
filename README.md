@@ -1,44 +1,53 @@
-# MyMarkdown
+# MarkPad
 
-MyMarkdown is a small, native Mac writing app for people who want the ease of a notes app and the durability of plain files. Write comfortably, then use the same Markdown or HTML files with Claude, Codex, Copilot, Finder, or another editor.
+MarkPad is a small, native Mac writing app for people who want the ease of a
+notes app and the durability of plain files. Write comfortably, then use the
+same Markdown or HTML files with Claude, Codex, Copilot, Finder, or any other
+editor.
+
+This replaces the earlier **MyMarkdown 0.1.0** app that used to live in this
+repo (still available in the git history and old releases).
 
 ## Download and use it
 
-1. Download the latest [MyMarkdown release](https://github.com/timclynch/MyMarkdown/releases/latest).
-2. Double-click the downloaded ZIP file, then drag `MyMarkdown.app` to your Applications folder.
-3. Open the app. On the first launch, it creates `Documents/MyMarkdown Library` and adds a short welcome note.
+1. Download the latest [MarkPad release](https://github.com/timclynch/MyMarkdown/releases/latest).
+2. Double-click the downloaded ZIP, then drag `MarkPad.app` to your Applications folder.
+3. Open the app. On first launch it creates `Documents/MyMarkdown` and adds a
+   short welcome note.
 
-Because this is an independently built app, macOS may ask for confirmation the first time. If it does, Control-click `MyMarkdown.app`, choose **Open**, and confirm.
+Because this is an independently built app, macOS may ask for confirmation the
+first time. If it does, Control-click `MarkPad.app`, choose **Open**, and confirm.
 
 ## What it does
 
-- Organizes notes in projects and nested folders you can see in Finder.
-- Creates ordinary Markdown (`.md`) and HTML (`.html`) files.
-- Offers Write, Preview, and Split views.
-- Provides formatting controls for headings, bold, italic, links, lists, checklists, quotes, and code.
-- Saves automatically as you write.
-- Searches document names and contents.
-- Lets you rename, move notes to the Trash, and reveal your library in Finder.
-- Lets you choose any folder as your writing library.
-
-Your work remains yours: MyMarkdown does not need an account, a cloud service, or a proprietary database.
+- **File tree sidebar** over `Documents/MyMarkdown` with nested project folders
+  (right-click for rename, delete, new-file-here; deletes go to the Trash)
+- **Plain-text editor** with smart quotes disabled (safe for Markdown), undo,
+  find (⌘F), and spell check
+- **Live preview** pane with GitHub-style rendering, light and dark mode
+- **Formatting toolbar and shortcuts**: ⌘B bold, ⌘I italic, ⌘K link, headings,
+  bullet lists, quotes, and code blocks
+- **Markdown / HTML toggle** per document — the toolbar and preview adapt
+- **Autosave** about one second after you stop typing (⌘S also works)
+- **Apple Notes import**: File → Import from Apple Notes… converts your notes
+  to Markdown files organized by their Notes folders
+- Edits `.md`, `.markdown`, `.txt`, `.html`, and `.htm` files
 
 ## Build from source
 
-MyMarkdown requires macOS 14 or later and Xcode’s command-line tools.
+Requires Xcode (or the Command Line Tools) on macOS 14 or later:
 
-```sh
-git clone https://github.com/timclynch/MyMarkdown.git
-cd MyMarkdown
-./scripts/build-app.sh
+```bash
+./build.sh
 ```
 
-The build creates `dist/MyMarkdown.app` and `dist/MyMarkdown.zip`.
+This compiles `Sources/*.swift`, generates the icon, and produces a signed
+`MarkPad.app` in the repo folder. To install it:
 
-## Status
-
-This is the first public version. Apple Notes migration is planned but is not included yet.
+```bash
+ditto MarkPad.app /Applications/MarkPad.app
+```
 
 ## License
 
-MyMarkdown is available under the [MIT License](LICENSE).
+[MIT](LICENSE)

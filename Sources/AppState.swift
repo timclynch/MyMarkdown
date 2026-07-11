@@ -1,0 +1,252 @@
+import SwiftUI
+import Combine
+
+struct FileNode: Identifiable, Hashable {
+    let url: URL
+    let name: String
+    let isDirectory: Bool
+    var children: [FileNode]?
+    var id: URL { url }
+}
+
+enum DocMode: String, CaseIterable, Identifiable {
+    case markdown = "Markdown"
+    case html = "HTML"
+    var id: String { rawValue }
+}
+
+final class AppState: ObservableObject {
+    @Published var rootURL: URL
+    @Published var tree: [FileNode] = []
+    @Published var selection: URL?
+    @Published var text: String = ""
+    @Published var mode: DocMode = .markdown
+    @Published var isDirty = false
+    @Published var showPreview = true
+    @Published var previewHTML: String = ""
+    @Published var statusMessage: String = "Ready"
+    @Published var errorMessage: String?
+
+    private(set) var currentFile: URL?
+    let format = FormatController()
+    private var cancellables = Set<AnyCancellable>()
+    private static let editableExtensions: Set<String> = ["md", "markdown", "txt", "html", "htm"]
+
+    init() {
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let root = docs.appendingPathComponent("MyMarkdown", isDirectory: true)
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        rootURL = root
+        createWelcomeFileIfNeeded()
+        refreshTree()
+
+        $text
+            .debounce(for: .milliseconds(250), scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in self?.updatePreview() }
+            .store(in: &cancellables)
+
+        $text
+            .debounce(for: .seconds(1.0), scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in self?.saveCurrent() }
+            .store(in: &cancellables)
+    }
+
+    // MARK: - File tree
+
+    func refreshTree() {
+        tree = Self.scan(rootURL)
+    }
+
+    private static func scan(_ dir: URL) -> [FileNode] {
+        let fm = FileManager.default
+        guard let contents = try? fm.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]) else { return [] }
+
+        var nodes: [FileNode] = []
+        for url in contents {
+            let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+            if isDir {
+                nodes.append(FileNode(url: url, name: url.lastPathComponent,
+                                      isDirectory: true, children: scan(url)))
+            } else if editableExtensions.contains(url.pathExtension.lowercased()) {
+                nodes.append(FileNode(url: url, name: url.lastPathComponent,
+                                      isDirectory: false, children: nil))
+            }
+        }
+        return nodes.sorted {
+            if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
+            return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+    }
+
+    /// Folder that new files/folders should land in, based on current selection.
+    var targetFolder: URL {
+        guard let sel = selection else { return rootURL }
+        let isDir = (try? sel.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+        return isDir ? sel : sel.deletingLastPathComponent()
+    }
+
+    // MARK: - Documents
+
+    func open(_ url: URL) {
+        guard !((try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false) else { return }
+        saveCurrent()
+        currentFile = url
+        text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+        mode = ["html", "htm"].contains(url.pathExtension.lowercased()) ? .html : .markdown
+        isDirty = false
+        statusMessage = url.lastPathComponent
+        updatePreview()
+        DispatchQueue.main.async { [weak self] in
+            self?.format.textView?.undoManager?.removeAllActions()
+        }
+    }
+
+    func textEdited(_ newText: String) {
+        text = newText
+        if currentFile != nil { isDirty = true }
+    }
+
+    func saveCurrent() {
+        guard isDirty, let url = currentFile else { return }
+        do {
+            try text.write(to: url, atomically: true, encoding: .utf8)
+            isDirty = false
+            let f = DateFormatter()
+            f.timeStyle = .medium
+            statusMessage = "Saved \(f.string(from: Date()))"
+        } catch {
+            errorMessage = "Couldn't save \(url.lastPathComponent): \(error.localizedDescription)"
+        }
+    }
+
+    func updatePreview() {
+        previewHTML = mode == .markdown ? Markdown.toHTML(text) : text
+    }
+
+    // MARK: - File operations
+
+    func createFile(named rawName: String, in folder: URL? = nil) {
+        var name = rawName.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        if !name.contains(".") { name += ".md" }
+        let url = (folder ?? targetFolder).appendingPathComponent(sanitize(name))
+        guard !FileManager.default.fileExists(atPath: url.path) else {
+            errorMessage = "A file named \(name) already exists there."
+            return
+        }
+        do {
+            try "".write(to: url, atomically: true, encoding: .utf8)
+            refreshTree()
+            selection = url
+            open(url)
+        } catch {
+            errorMessage = "Couldn't create file: \(error.localizedDescription)"
+        }
+    }
+
+    func createFolder(named rawName: String, in folder: URL? = nil) {
+        let name = sanitize(rawName.trimmingCharacters(in: .whitespaces))
+        guard !name.isEmpty else { return }
+        let url = (folder ?? targetFolder).appendingPathComponent(name, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+            refreshTree()
+        } catch {
+            errorMessage = "Couldn't create folder: \(error.localizedDescription)"
+        }
+    }
+
+    func rename(_ url: URL, to rawName: String) {
+        var name = sanitize(rawName.trimmingCharacters(in: .whitespaces))
+        guard !name.isEmpty else { return }
+        let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+        if !isDir && !name.contains(".") { name += "." + url.pathExtension }
+        let dest = url.deletingLastPathComponent().appendingPathComponent(name)
+        do {
+            try FileManager.default.moveItem(at: url, to: dest)
+            if currentFile == url {
+                currentFile = dest
+                selection = dest
+                statusMessage = dest.lastPathComponent
+            }
+            refreshTree()
+        } catch {
+            errorMessage = "Couldn't rename: \(error.localizedDescription)"
+        }
+    }
+
+    func moveToTrash(_ url: URL) {
+        do {
+            try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+            if currentFile == url || currentFile?.path.hasPrefix(url.path + "/") == true {
+                currentFile = nil
+                text = ""
+                isDirty = false
+                selection = nil
+                statusMessage = "Ready"
+                updatePreview()
+            }
+            refreshTree()
+        } catch {
+            errorMessage = "Couldn't move to Trash: \(error.localizedDescription)"
+        }
+    }
+
+    func revealInFinder(_ url: URL?) {
+        let target = url ?? currentFile ?? rootURL
+        NSWorkspace.shared.activateFileViewerSelecting([target])
+    }
+
+    func sanitize(_ name: String) -> String {
+        name.replacingOccurrences(of: "/", with: "-")
+            .replacingOccurrences(of: ":", with: "-")
+    }
+
+    // MARK: - Welcome file
+
+    private func createWelcomeFileIfNeeded() {
+        let fm = FileManager.default
+        let contents = (try? fm.contentsOfDirectory(atPath: rootURL.path)) ?? []
+        guard contents.filter({ !$0.hasPrefix(".") }).isEmpty else { return }
+        let welcome = rootURL.appendingPathComponent("Welcome to MarkPad.md")
+        let body = """
+        # Welcome to MarkPad 👋
+
+        Everything you write here is saved as a plain **Markdown file** in \
+        `Documents/MyMarkdown` — ready to paste into Claude, ChatGPT, Copilot, or anywhere else.
+
+        ## The basics
+
+        - Files and folders live in the **sidebar**. Right-click for rename, delete, and more.
+        - **⌘N** makes a new file, **⌘⇧N** makes a new folder. Nest folders as deep as you like.
+        - Your work **autosaves** about a second after you stop typing.
+        - Toggle the **live preview** with the sidebar-shaped button in the toolbar.
+        - Switch a document between **Markdown and HTML** mode with the picker in the toolbar.
+
+        ## Formatting cheat sheet
+
+        | You type | You get |
+        |---|---|
+        | `**bold**` | **bold** |
+        | `*italic*` | *italic* |
+        | `# Heading` | a big heading |
+        | `- item` | a bullet list |
+        | `[title](https://example.com)` | a link |
+        | `` `code` `` | `code` |
+
+        > Tip: select some text and press **⌘B** or **⌘I** — MarkPad wraps it for you.
+
+        ## Importing your Apple Notes
+
+        Choose **File → Import from Apple Notes…** and MarkPad will copy your notes
+        into an “Apple Notes Import” folder here, converted to Markdown.
+        macOS will ask permission the first time — that's normal.
+
+        Happy writing!
+        """
+        try? body.write(to: welcome, atomically: true, encoding: .utf8)
+    }
+}
