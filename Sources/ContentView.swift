@@ -66,8 +66,15 @@ struct ContentView: View {
                           ? "chevron.left.forwardslash.chevron.right" : "doc.text")
                 }
                 .tag(node.url)
+                .draggable(node.url)
+                .dropDestination(for: URL.self) { urls, _ in
+                    let dest = node.isDirectory ? node.url : node.url.deletingLastPathComponent()
+                    for url in urls { state.move(url, into: dest) }
+                    return true
+                }
                 .contextMenu {
                     Button("Rename…") { sheet = .rename(node.url) }
+                    moveToMenu(for: node)
                     Button("Reveal in Finder") { state.revealInFinder(node.url) }
                     Divider()
                     if node.isDirectory {
@@ -80,6 +87,10 @@ struct ContentView: View {
             }
         }
         .listStyle(.sidebar)
+        .dropDestination(for: URL.self) { urls, _ in
+            for url in urls { state.move(url, into: state.rootURL) }
+            return true
+        }
         .navigationSplitViewColumnWidth(min: 200, ideal: 240)
         .toolbar {
             ToolbarItemGroup {
@@ -122,6 +133,21 @@ struct ContentView: View {
                 statusBar
             }
             .toolbar { editorToolbar }
+        }
+    }
+
+    private func moveToMenu(for node: FileNode) -> some View {
+        Menu("Move To") {
+            Button("MyMarkdown (top level)") { state.move(node.url, into: state.rootURL) }
+                .disabled(node.url.deletingLastPathComponent().path == state.rootURL.path)
+            let folders = state.allFolders
+            if !folders.isEmpty { Divider() }
+            ForEach(folders, id: \.url) { folder in
+                Button(folder.title) { state.move(node.url, into: folder.url) }
+                    .disabled(folder.url == node.url
+                              || folder.url.path == node.url.deletingLastPathComponent().path
+                              || folder.url.path.hasPrefix(node.url.path + "/"))
+            }
         }
     }
 

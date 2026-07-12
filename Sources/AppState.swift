@@ -195,6 +195,73 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Every folder in the vault, depth-first, for the "Move To" menu.
+    var allFolders: [(url: URL, title: String)] {
+        var out: [(URL, String)] = []
+        func walk(_ nodes: [FileNode], depth: Int) {
+            for node in nodes where node.isDirectory {
+                out.append((node.url, String(repeating: "\u{2003}", count: depth) + node.name))
+                walk(node.children ?? [], depth: depth + 1)
+            }
+        }
+        walk(tree, depth: 0)
+        return out
+    }
+
+    /// Moves a file or folder into another folder (drag & drop or "Move To").
+    /// Items dragged in from outside the vault are copied instead.
+    func move(_ source: URL, into destinationFolder: URL) {
+        let fm = FileManager.default
+        let src = source.standardizedFileURL
+        let destDir = destinationFolder.standardizedFileURL
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: src.path),
+              fm.fileExists(atPath: destDir.path, isDirectory: &isDir),
+              isDir.boolValue else { return }
+        guard src != destDir,
+              src.deletingLastPathComponent().path != destDir.path else { return }
+        if destDir.path.hasPrefix(src.path + "/") {
+            errorMessage = "Can't move a folder into itself."
+            return
+        }
+
+        // Pick a non-conflicting destination name
+        var dest = destDir.appendingPathComponent(src.lastPathComponent)
+        let base = dest.deletingPathExtension().lastPathComponent
+        let ext = dest.pathExtension
+        var counter = 2
+        while fm.fileExists(atPath: dest.path) {
+            let name = ext.isEmpty ? "\(base) \(counter)" : "\(base) \(counter).\(ext)"
+            dest = destDir.appendingPathComponent(name)
+            counter += 1
+        }
+
+        do {
+            let insideVault = src.path.hasPrefix(rootURL.standardizedFileURL.path + "/")
+            if insideVault {
+                try fm.moveItem(at: src, to: dest)
+            } else {
+                try fm.copyItem(at: src, to: dest)
+            }
+            // Keep the open document pointed at its new location
+            if let current = currentFile {
+                if current.standardizedFileURL == src {
+                    currentFile = dest
+                    selection = dest
+                } else if current.path.hasPrefix(src.path + "/") {
+                    let suffix = String(current.path.dropFirst(src.path.count))
+                    let remapped = URL(fileURLWithPath: dest.path + suffix)
+                    currentFile = remapped
+                    selection = remapped
+                }
+            }
+            refreshTree()
+            statusMessage = "Moved \(dest.lastPathComponent) to \(destDir.lastPathComponent)"
+        } catch {
+            errorMessage = "Couldn't move: \(error.localizedDescription)"
+        }
+    }
+
     func revealInFinder(_ url: URL?) {
         let target = url ?? currentFile ?? rootURL
         NSWorkspace.shared.activateFileViewerSelecting([target])
