@@ -4,6 +4,7 @@
 # disturbed by Finder/file-provider metadata, then copies back here.
 set -e
 cd "$(dirname "$0")"
+ROOT="$(pwd)"
 
 APP="MarkPad.app"
 ARCH="$(uname -m)"
@@ -28,14 +29,18 @@ swiftc -O -swift-version 5 -parse-as-library \
   -framework AppKit -framework WebKit \
   -o "$STAGED/Contents/MacOS/MarkPad"
 
-cat Info.plist > "$STAGED/Contents/Info.plist"
-cat AppIcon.icns > "$STAGED/Contents/Resources/AppIcon.icns"
+cp Info.plist "$STAGED/Contents/Info.plist"
+cp AppIcon.icns "$STAGED/Contents/Resources/AppIcon.icns"
 
 xattr -cr "$STAGED"
 codesign --force -s - "$STAGED"
 codesign -v "$STAGED"
 
-rm -rf "$APP"
+rm -rf "$APP" MarkPad.zip
+(
+  cd "$BUILD_DIR"
+  COPYFILE_DISABLE=1 /usr/bin/zip -qry "$ROOT/MarkPad.zip" "$APP"
+)
 ditto "$STAGED" "$APP"
 rm -rf "$BUILD_DIR"
-echo "Built $APP"
+echo "Built $APP and MarkPad.zip"

@@ -30,9 +30,9 @@ struct ContentView: View {
         .sheet(item: $sheet) { kind in
             NameSheet(kind: kind) { name in
                 switch kind {
-                case .newFile: state.createFile(named: name)
-                case .newFolder: state.createFolder(named: name)
-                case .rename(let url): state.rename(url, to: name)
+                case .newFile: return state.createFile(named: name)
+                case .newFolder: return state.createFolder(named: name)
+                case .rename(let url): return state.rename(url, to: name)
                 }
             }
         }
@@ -87,6 +87,11 @@ struct ContentView: View {
             }
         }
         .listStyle(.sidebar)
+        .onKeyPress(.return) {
+            guard let selection = state.selection else { return .ignored }
+            sheet = .rename(selection)
+            return .handled
+        }
         .dropDestination(for: URL.self) { urls, _ in
             for url in urls { state.move(url, into: state.rootURL) }
             return true
@@ -102,6 +107,13 @@ struct ContentView: View {
                     Label("New Folder", systemImage: "folder.badge.plus")
                 }
                 .help("New folder (⇧⌘N)")
+                Button {
+                    if let selection = state.selection { sheet = .rename(selection) }
+                } label: {
+                    Label("Rename", systemImage: "pencil")
+                }
+                .disabled(state.selection == nil)
+                .help("Rename selected item")
                 Button { state.refreshTree() } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
@@ -123,7 +135,8 @@ struct ContentView: View {
                         text: Binding(
                             get: { state.text },
                             set: { state.textEdited($0) }),
-                        controller: state.format)
+                        controller: state.format,
+                        mode: state.mode)
                         .frame(minWidth: 320, maxWidth: .infinity, maxHeight: .infinity)
                     if state.showPreview {
                         PreviewWebView(html: state.previewHTML)
@@ -264,15 +277,17 @@ struct ContentView: View {
 
 struct NameSheet: View {
     let kind: ContentView.SheetKind
-    let onSubmit: (String) -> Void
+    let onSubmit: (String) -> String?
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
+    @State private var validationMessage: String?
+    @FocusState private var isNameFocused: Bool
 
     private var title: String {
         switch kind {
         case .newFile: return "New File"
         case .newFolder: return "New Folder"
-        case .rename: return "Rename"
+        case .rename: return "Rename Item"
         }
     }
     private var prompt: String {
@@ -283,13 +298,31 @@ struct NameSheet: View {
         }
     }
 
+    private var preservedExtension: String? {
+        guard case .rename(let url) = kind,
+              !((try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false),
+              !url.pathExtension.isEmpty else { return nil }
+        return url.pathExtension
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(title).font(.headline)
             TextField(prompt, text: $name)
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 300)
+                .focused($isNameFocused)
                 .onSubmit(submit)
+            if let preservedExtension {
+                Text("The .\(preservedExtension) extension is retained automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let validationMessage {
+                Text(validationMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -304,14 +337,15 @@ struct NameSheet: View {
             if case .rename(let url) = kind {
                 name = url.lastPathComponent
             }
+            isNameFocused = true
         }
     }
 
     private func submit() {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
-        onSubmit(trimmed)
-        dismiss()
+        validationMessage = onSubmit(trimmed)
+        if validationMessage == nil { dismiss() }
     }
 }
 

@@ -4,5 +4,6 @@ dist/
 *.xcuserstate
 DerivedData/
 MarkPad.app/
+MarkPad.zip
 AppIcon.icns
 AppIcon.iconset/

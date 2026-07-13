@@ -22,8 +22,15 @@ first time. If it does, Control-click `MarkPad.app`, choose **Open**, and confir
 
 - **File tree sidebar** over `Documents/MyMarkdown` with nested project folders
   (right-click for rename, delete, new-file-here; deletes go to the Trash)
-- **Plain-text editor** with smart quotes disabled (safe for Markdown), undo,
-  find (⌘F), and spell check
+- **Safe naming** for new files, folders, and renames; document extensions are retained,
+  name collisions are stopped before anything is overwritten, and an open note follows its
+  folder when that folder is renamed
+- **Plain-text editor** with reliable native undo/redo, find and replace (⌘F),
+  spellcheck, grammar checking, and macOS text replacement—while smart quotes and dashes
+  stay disabled so Markdown and HTML remain safe
+- **Markdown writing helpers**: Return continues or ends lists naturally, Tab/Shift-Tab
+  indents list items and quotes, and basic rich-text paste converts headings, emphasis,
+  links, lists, and checklists into Markdown
 - **Live preview** pane with GitHub-style rendering, light and dark mode
 - **Formatting toolbar and shortcuts**: ⌘B bold, ⌘I italic, ⌘K link, headings,
   bullet lists, quotes, and code blocks
@@ -42,7 +49,8 @@ Requires Xcode (or the Command Line Tools) on macOS 14 or later:
 ```
 
 This compiles `Sources/*.swift`, generates the icon, and produces a signed
-`MarkPad.app` in the repo folder. To install it:
+`MarkPad.app` plus a clean transfer archive, `MarkPad.zip`, in the repo folder.
+To install it:
 
 ```bash
 ditto MarkPad.app /Applications/MarkPad.app
