@@ -128,53 +128,63 @@ final class AppState: ObservableObject {
 
     // MARK: - File operations
 
-    func createFile(named rawName: String, in folder: URL? = nil) {
-        var name = rawName.trimmingCharacters(in: .whitespaces)
-        guard !name.isEmpty else { return }
-        if !name.contains(".") { name += ".md" }
-        let url = (folder ?? targetFolder).appendingPathComponent(sanitize(name))
-        guard !FileManager.default.fileExists(atPath: url.path) else {
-            errorMessage = "A file named \(name) already exists there."
-            return
-        }
+    @discardableResult
+    func createFile(named rawName: String, in folder: URL? = nil) -> String? {
         do {
+            var name = try ItemNameRules.normalizedName(rawName)
+            if !name.contains(".") { name += ".md" }
+            let url = (folder ?? targetFolder).appendingPathComponent(name)
+            guard !FileManager.default.fileExists(atPath: url.path) else {
+                return "A file named \(name) already exists there."
+            }
             try "".write(to: url, atomically: true, encoding: .utf8)
             refreshTree()
             selection = url
             open(url)
+            return nil
         } catch {
-            errorMessage = "Couldn't create file: \(error.localizedDescription)"
+            return error.localizedDescription
         }
     }
 
-    func createFolder(named rawName: String, in folder: URL? = nil) {
-        let name = sanitize(rawName.trimmingCharacters(in: .whitespaces))
-        guard !name.isEmpty else { return }
-        let url = (folder ?? targetFolder).appendingPathComponent(name, isDirectory: true)
+    @discardableResult
+    func createFolder(named rawName: String, in folder: URL? = nil) -> String? {
         do {
+            let name = try ItemNameRules.normalizedName(rawName)
+            let url = (folder ?? targetFolder).appendingPathComponent(name, isDirectory: true)
+            guard !FileManager.default.fileExists(atPath: url.path) else {
+                return "A folder named \(name) already exists there."
+            }
             try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
             refreshTree()
+            selection = url
+            return nil
         } catch {
-            errorMessage = "Couldn't create folder: \(error.localizedDescription)"
+            return error.localizedDescription
         }
     }
 
-    func rename(_ url: URL, to rawName: String) {
-        var name = sanitize(rawName.trimmingCharacters(in: .whitespaces))
-        guard !name.isEmpty else { return }
+    @discardableResult
+    func rename(_ url: URL, to rawName: String) -> String? {
+        saveCurrent()
         let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
-        if !isDir && !name.contains(".") { name += "." + url.pathExtension }
-        let dest = url.deletingLastPathComponent().appendingPathComponent(name)
         do {
+            let baseName = try ItemNameRules.normalizedName(rawName, keepingExtension: isDir ? nil : url.pathExtension)
+            let dest = ItemNameRules.renamedURL(from: url, baseName: baseName, isDirectory: isDir)
+            if dest.standardizedFileURL == url.standardizedFileURL { return nil }
+            guard !FileManager.default.fileExists(atPath: dest.path) else {
+                return "An item named \(dest.lastPathComponent) already exists there."
+            }
             try FileManager.default.moveItem(at: url, to: dest)
-            if currentFile == url {
-                currentFile = dest
-                selection = dest
-                statusMessage = dest.lastPathComponent
+            currentFile = ItemNameRules.remappedURL(currentFile, from: url, to: dest)
+            selection = ItemNameRules.remappedURL(selection, from: url, to: dest)
+            if let currentFile {
+                statusMessage = currentFile.lastPathComponent
             }
             refreshTree()
+            return nil
         } catch {
-            errorMessage = "Couldn't rename: \(error.localizedDescription)"
+            return error.localizedDescription
         }
     }
 
