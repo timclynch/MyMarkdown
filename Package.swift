@@ -11,6 +11,11 @@ let package = Package(
         .executableTarget(
             name: "MyMarkdown",
             path: "Sources/MyMarkdown"
+        ),
+        .testTarget(
+            name: "MyMarkdownTests",
+            dependencies: ["MyMarkdown"],
+            path: "Tests/MyMarkdownTests"
         )
     ]
 )

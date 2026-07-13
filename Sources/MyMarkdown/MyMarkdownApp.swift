@@ -28,11 +28,11 @@ struct AppCommands: Commands {
 
     var body: some Commands {
         CommandGroup(after: .newItem) {
-            Button("New Markdown Note") { workspace.createDocument(kind: .markdown) }
+            Button("New Markdown Note") { workspace.beginCreateDocument(kind: .markdown) }
                 .keyboardShortcut("n", modifiers: [.command])
-            Button("New HTML Document") { workspace.createDocument(kind: .html) }
+            Button("New HTML Document") { workspace.beginCreateDocument(kind: .html) }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
-            Button("New Folder") { workspace.createFolder() }
+            Button("New Folder") { workspace.beginCreateFolder() }
                 .keyboardShortcut("n", modifiers: [.command, .option])
         }
 

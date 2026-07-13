@@ -13,9 +13,11 @@ Because this is an independently built app, macOS may ask for confirmation the f
 ## What it does
 
 - Organizes notes in projects and nested folders you can see in Finder.
+- Names new notes and folders before they are created, and renames any library item later.
 - Creates ordinary Markdown (`.md`) and HTML (`.html`) files.
 - Offers Write, Preview, and Split views.
-- Provides formatting controls for headings, bold, italic, links, lists, checklists, quotes, and code.
+- Provides formatting controls for headings, bold, italic, links, lists, checklists, quotes, and code—all with native Undo and Redo.
+- Includes native Find and Replace, spellcheck, grammar checking, text replacement, and Markdown-friendly rich-text paste.
 - Saves automatically as you write.
 - Searches document names and contents.
 - Lets you rename, move notes to the Trash, and reveal your library in Finder.
@@ -37,7 +39,7 @@ The build creates `dist/MyMarkdown.app` and `dist/MyMarkdown.zip`.
 
 ## Status
 
-This is the first public version. Apple Notes migration is planned but is not included yet.
+Version 0.2.0 improves naming and the writing experience. Apple Notes migration is planned but is not included yet.
 
 ## License
 

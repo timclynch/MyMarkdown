@@ -7,6 +7,7 @@ final class WorkspaceStore: ObservableObject {
     @Published var rootURL: URL
     @Published var tree: [FileNode] = []
     @Published var selectedURL: URL? {
+        willSet { saveCurrentDocument(at: selectedURL) }
         didSet { loadSelection() }
     }
     @Published var text = ""
@@ -14,8 +15,11 @@ final class WorkspaceStore: ObservableObject {
     @Published var editorMode: EditorMode = .write
     @Published var searchText = ""
     @Published var statusMessage = "Ready"
-    @Published var isShowingRename = false
-    @Published var renameText = ""
+    @Published var namingIntent: NamingIntent?
+    @Published var nameDraft = ""
+    @Published var namingError: String?
+
+    let editorSession = EditorSession()
 
     private var saveTask: Task<Void, Never>?
     private var isLoading = false
@@ -32,21 +36,29 @@ final class WorkspaceStore: ObservableObject {
     }
 
     var selectedKind: DocumentKind? {
-        guard let selectedURL else { return nil }
+        guard let selectedURL, !isDirectory(selectedURL) else { return nil }
         return DocumentKind(rawValue: selectedURL.pathExtension.lowercased())
     }
 
     var selectedName: String {
-        selectedURL?.deletingPathExtension().lastPathComponent ?? "MyMarkdown"
+        guard let selectedURL else { return "MyMarkdown" }
+        return displayName(for: selectedURL)
     }
 
     var selectedRelativePath: String {
         guard let selectedURL else { return rootURL.path }
-        return selectedURL.path.replacingOccurrences(of: rootURL.path + "/", with: "")
+        let rootPath = rootURL.resolvingSymlinksInPath().path
+        let selectedPath = selectedURL.resolvingSymlinksInPath().path
+        return selectedPath.replacingOccurrences(of: rootPath + "/", with: "")
     }
 
     var wordCount: Int {
         text.split { $0.isWhitespace || $0.isNewline }.count
+    }
+
+    var namingHint: String? {
+        guard case .rename(let url) = namingIntent, !isDirectory(url), !url.pathExtension.isEmpty else { return nil }
+        return "The .\(url.pathExtension) extension is kept automatically."
     }
 
     var filteredTree: [FileNode] {
@@ -83,60 +95,61 @@ final class WorkspaceStore: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([rootURL])
     }
 
-    func createDocument(kind: DocumentKind) {
-        let parent = destinationFolder()
-        let base = kind == .markdown ? "Untitled Note" : "Untitled Page"
-        let url = uniqueURL(in: parent, base: base, extension: kind.rawValue)
-        let initial: String
-        if kind == .markdown {
-            initial = "# \(url.deletingPathExtension().lastPathComponent)\n\n"
-        } else {
-            initial = "<!doctype html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n  <title>\(url.deletingPathExtension().lastPathComponent)</title>\n</head>\n<body>\n  <h1>\(url.deletingPathExtension().lastPathComponent)</h1>\n  <p>Start writing here.</p>\n</body>\n</html>\n"
-        }
-        do {
-            try initial.write(to: url, atomically: true, encoding: .utf8)
-            reloadTree()
-            selectedURL = url
-            statusMessage = "Created \(url.lastPathComponent)"
-        } catch {
-            present(error: error)
-        }
+    func beginCreateDocument(kind: DocumentKind) {
+        startNaming(.createDocument(kind), defaultName: "")
     }
 
-    func createFolder() {
-        let parent = destinationFolder()
-        let url = uniqueFolderURL(in: parent, base: "New Project")
-        do {
-            try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
-            reloadTree()
-            statusMessage = "Created \(url.lastPathComponent)"
-        } catch {
-            present(error: error)
-        }
+    func beginCreateFolder() {
+        startNaming(.createFolder, defaultName: "")
     }
 
-    func beginRename() {
+    func beginRename(_ url: URL? = nil) {
+        saveImmediately()
+        if let url { selectedURL = url }
         guard let selectedURL else { return }
-        renameText = selectedURL.deletingPathExtension().lastPathComponent
-        isShowingRename = true
+        startNaming(.rename(selectedURL), defaultName: displayName(for: selectedURL))
     }
 
-    func finishRename() {
-        guard let oldURL = selectedURL else { return }
-        let clean = sanitize(renameText)
-        guard !clean.isEmpty else { return }
-        let newURL = oldURL.deletingLastPathComponent()
-            .appendingPathComponent(clean)
-            .appendingPathExtension(oldURL.pathExtension)
-        guard newURL != oldURL else { return }
+    func cancelNaming() {
+        namingIntent = nil
+        nameDraft = ""
+        namingError = nil
+    }
+
+    @discardableResult
+    func confirmNaming() -> Bool {
+        guard let namingIntent else { return false }
         do {
-            saveImmediately()
-            try fileManager.moveItem(at: oldURL, to: newURL)
-            selectedURL = nil
-            reloadTree()
-            selectedURL = newURL
+            switch namingIntent {
+            case .createDocument(let kind):
+                let baseName = try ItemNameValidator.normalizedBaseName(nameDraft, fileExtension: kind.rawValue)
+                let url = destinationFolder().appendingPathComponent(baseName).appendingPathExtension(kind.rawValue)
+                guard !fileManager.fileExists(atPath: url.path) else { throw ItemNameError.alreadyExists }
+                try initialContent(for: kind, name: baseName).write(to: url, atomically: true, encoding: .utf8)
+                finishNaming(with: url, status: "Created \(url.lastPathComponent)")
+
+            case .createFolder:
+                let baseName = try ItemNameValidator.normalizedBaseName(nameDraft)
+                let url = destinationFolder().appendingPathComponent(baseName, isDirectory: true)
+                guard !fileManager.fileExists(atPath: url.path) else { throw ItemNameError.alreadyExists }
+                try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+                finishNaming(with: url, status: "Created \(url.lastPathComponent)")
+
+            case .rename(let oldURL):
+                let directory = isDirectory(oldURL)
+                let extensionToKeep = directory ? nil : oldURL.pathExtension
+                let baseName = try ItemNameValidator.normalizedBaseName(nameDraft, fileExtension: extensionToKeep)
+                let newURL = LibraryItemOperations.destinationURL(for: oldURL, baseName: baseName, isDirectory: directory)
+                let priorSelection = selectedURL
+                saveImmediately()
+                try LibraryItemOperations.moveItem(at: oldURL, to: newURL, fileManager: fileManager)
+                let remappedSelection = LibraryItemOperations.remappedURL(priorSelection, movingFrom: oldURL, to: newURL)
+                finishNaming(with: remappedSelection ?? newURL, status: "Renamed to \(newURL.lastPathComponent)")
+            }
+            return true
         } catch {
-            present(error: error)
+            namingError = error.localizedDescription
+            return false
         }
     }
 
@@ -151,7 +164,9 @@ final class WorkspaceStore: ObservableObject {
         do {
             saveTask?.cancel()
             _ = try fileManager.trashItem(at: url, resultingItemURL: nil)
+            isLoading = true
             selectedURL = nil
+            isLoading = false
             text = ""
             reloadTree()
         } catch {
@@ -167,9 +182,17 @@ final class WorkspaceStore: ObservableObject {
 
     func saveImmediately() {
         saveTask?.cancel()
-        guard let selectedURL, selectedKind != nil, !isLoading else { return }
+        saveCurrentDocument(at: selectedURL)
+    }
+
+    private func saveCurrentDocument(at url: URL?) {
+        guard let url,
+              !isLoading,
+              !isDirectory(url),
+              DocumentKind(rawValue: url.pathExtension.lowercased()) != nil,
+              fileManager.fileExists(atPath: url.path) else { return }
         do {
-            try text.write(to: selectedURL, atomically: true, encoding: .utf8)
+            try text.write(to: url, atomically: true, encoding: .utf8)
             statusMessage = "Saved"
         } catch {
             present(error: error)
@@ -177,32 +200,46 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func apply(_ action: FormattingAction) {
-        guard selectedKind != nil else { return }
-        let nsText = text as NSString
-        let safeLocation = min(selection.location, nsText.length)
-        let safeLength = min(selection.length, nsText.length - safeLocation)
-        let range = NSRange(location: safeLocation, length: safeLength)
-        let chosen = nsText.substring(with: range)
-
-        let replacement: String
-        let cursorOffset: Int
-        if selectedKind == .html {
-            (replacement, cursorOffset) = htmlReplacement(action, chosen: chosen)
-        } else {
-            (replacement, cursorOffset) = markdownReplacement(action, chosen: chosen)
+        guard let selectedKind else {
+            statusMessage = "Open a document before formatting it"
+            return
         }
+        guard editorMode != .preview else {
+            statusMessage = "Switch to Write or Split view to format text"
+            return
+        }
+        editorSession.apply(action, kind: selectedKind)
+    }
 
-        text = nsText.replacingCharacters(in: range, with: replacement)
-        selection = NSRange(location: safeLocation + cursorOffset, length: chosen.isEmpty ? 0 : chosen.utf16.count)
-        scheduleSave()
+    private func startNaming(_ intent: NamingIntent, defaultName: String) {
+        namingIntent = intent
+        nameDraft = defaultName
+        namingError = nil
+    }
+
+    private func finishNaming(with url: URL, status: String) {
+        isLoading = true
+        selectedURL = nil
+        reloadTree()
+        isLoading = false
+        selectedURL = url
+        namingIntent = nil
+        nameDraft = ""
+        namingError = nil
+        statusMessage = status
     }
 
     private func loadSelection() {
-        saveImmediately()
-        guard let url = selectedURL else { text = ""; return }
-        var isDirectory: ObjCBool = false
-        guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory), !isDirectory.boolValue else { return }
-        guard DocumentKind(rawValue: url.pathExtension.lowercased()) != nil else { return }
+        guard let url = selectedURL else {
+            text = ""
+            selection = NSRange(location: 0, length: 0)
+            return
+        }
+        guard !isDirectory(url), DocumentKind(rawValue: url.pathExtension.lowercased()) != nil else {
+            text = ""
+            selection = NSRange(location: 0, length: 0)
+            return
+        }
         do {
             isLoading = true
             text = try String(contentsOf: url, encoding: .utf8)
@@ -232,14 +269,19 @@ final class WorkspaceStore: ObservableObject {
         }
     }
 
+    private func initialContent(for kind: DocumentKind, name: String) -> String {
+        if kind == .markdown { return "# \(name)\n\n" }
+        return "<!doctype html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n  <title>\(name)</title>\n</head>\n<body>\n  <h1>\(name)</h1>\n  <p>Start writing here.</p>\n</body>\n</html>\n"
+    }
+
     private func nodes(at url: URL) -> [FileNode] {
         let keys: [URLResourceKey] = [.isDirectoryKey, .isHiddenKey]
         let urls = (try? fileManager.contentsOfDirectory(at: url, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])) ?? []
         return urls.compactMap { child in
             let values = try? child.resourceValues(forKeys: Set(keys))
-            let isDirectory = values?.isDirectory == true
-            guard isDirectory || DocumentKind(rawValue: child.pathExtension.lowercased()) != nil else { return nil }
-            return FileNode(url: child, isDirectory: isDirectory, children: isDirectory ? nodes(at: child) : nil)
+            let directory = values?.isDirectory == true
+            guard directory || DocumentKind(rawValue: child.pathExtension.lowercased()) != nil else { return nil }
+            return FileNode(url: child, isDirectory: directory, children: directory ? nodes(at: child) : nil)
         }.sorted {
             if $0.isDirectory != $1.isDirectory { return $0.isDirectory }
             return $0.name.localizedStandardCompare($1.name) == .orderedAscending
@@ -263,76 +305,16 @@ final class WorkspaceStore: ObservableObject {
 
     private func destinationFolder() -> URL {
         guard let selectedURL else { return rootURL }
-        var isDirectory: ObjCBool = false
-        if fileManager.fileExists(atPath: selectedURL.path, isDirectory: &isDirectory), isDirectory.boolValue {
-            return selectedURL
-        }
-        return selectedURL.deletingLastPathComponent()
+        return isDirectory(selectedURL) ? selectedURL : selectedURL.deletingLastPathComponent()
     }
 
-    private func uniqueURL(in folder: URL, base: String, extension ext: String) -> URL {
-        var number = 1
-        var url = folder.appendingPathComponent(base).appendingPathExtension(ext)
-        while fileManager.fileExists(atPath: url.path) {
-            number += 1
-            url = folder.appendingPathComponent("\(base) \(number)").appendingPathExtension(ext)
-        }
-        return url
+    private func displayName(for url: URL) -> String {
+        isDirectory(url) ? url.lastPathComponent : url.deletingPathExtension().lastPathComponent
     }
 
-    private func uniqueFolderURL(in folder: URL, base: String) -> URL {
-        var number = 1
-        var url = folder.appendingPathComponent(base, isDirectory: true)
-        while fileManager.fileExists(atPath: url.path) {
-            number += 1
-            url = folder.appendingPathComponent("\(base) \(number)", isDirectory: true)
-        }
-        return url
-    }
-
-    private func sanitize(_ name: String) -> String {
-        name.replacingOccurrences(of: "/", with: "-")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func markdownReplacement(_ action: FormattingAction, chosen: String) -> (String, Int) {
-        switch action {
-        case .heading: return ("## " + (chosen.isEmpty ? "Heading" : chosen), 3)
-        case .bold: return ("**" + (chosen.isEmpty ? "bold text" : chosen) + "**", 2)
-        case .italic: return ("_" + (chosen.isEmpty ? "italic text" : chosen) + "_", 1)
-        case .bulletedList: return prefixLines(chosen, prefix: "- ")
-        case .numberedList: return numberedLines(chosen)
-        case .checklist: return prefixLines(chosen, prefix: "- [ ] ")
-        case .quote: return prefixLines(chosen, prefix: "> ")
-        case .link: return ("[" + (chosen.isEmpty ? "link text" : chosen) + "](https://)", 1)
-        case .code: return chosen.contains("\n") ? ("```\n\(chosen)\n```", 4) : ("`" + (chosen.isEmpty ? "code" : chosen) + "`", 1)
-        }
-    }
-
-    private func htmlReplacement(_ action: FormattingAction, chosen: String) -> (String, Int) {
-        let content = chosen.isEmpty ? "text" : chosen
-        switch action {
-        case .heading: return ("<h2>\(content)</h2>", 4)
-        case .bold: return ("<strong>\(content)</strong>", 8)
-        case .italic: return ("<em>\(content)</em>", 4)
-        case .bulletedList: return ("<ul>\n  <li>\(content)</li>\n</ul>", 11)
-        case .numberedList: return ("<ol>\n  <li>\(content)</li>\n</ol>", 11)
-        case .checklist: return ("<label><input type=\"checkbox\"> \(content)</label>", 38)
-        case .quote: return ("<blockquote>\(content)</blockquote>", 12)
-        case .link: return ("<a href=\"https://\">\(content)</a>", 19)
-        case .code: return ("<code>\(content)</code>", 6)
-        }
-    }
-
-    private func prefixLines(_ chosen: String, prefix: String) -> (String, Int) {
-        let source = chosen.isEmpty ? "List item" : chosen
-        return (source.split(separator: "\n", omittingEmptySubsequences: false).map { prefix + $0 }.joined(separator: "\n"), prefix.utf16.count)
-    }
-
-    private func numberedLines(_ chosen: String) -> (String, Int) {
-        let source = chosen.isEmpty ? "List item" : chosen
-        let result = source.split(separator: "\n", omittingEmptySubsequences: false).enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
-        return (result, 3)
+    private func isDirectory(_ url: URL) -> Bool {
+        var directory: ObjCBool = false
+        return fileManager.fileExists(atPath: url.path, isDirectory: &directory) && directory.boolValue
     }
 
     private func present(error: Error) {

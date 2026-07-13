@@ -17,8 +17,8 @@ struct ContentView: View {
         }
         .toolbar { MainToolbar() }
         .onDisappear { workspace.saveImmediately() }
-        .sheet(isPresented: $workspace.isShowingRename) {
-            RenameView()
+        .sheet(item: $workspace.namingIntent) { _ in
+            ItemNameSheet()
         }
     }
 }
@@ -35,10 +35,10 @@ private struct SidebarView: View {
                     .font(.headline)
                 Spacer()
                 Menu {
-                    Button("New Markdown Note") { workspace.createDocument(kind: .markdown) }
-                    Button("New HTML Document") { workspace.createDocument(kind: .html) }
+                    Button("New Markdown Note") { workspace.beginCreateDocument(kind: .markdown) }
+                    Button("New HTML Document") { workspace.beginCreateDocument(kind: .html) }
                     Divider()
-                    Button("New Folder") { workspace.createFolder() }
+                    Button("New Folder") { workspace.beginCreateFolder() }
                 } label: {
                     Image(systemName: "plus")
                 }
@@ -59,11 +59,8 @@ private struct SidebarView: View {
                     }
                     .tag(node.url)
                     .contextMenu {
-                        if !node.isDirectory {
-                            Button("Rename…") {
-                                workspace.selectedURL = node.url
-                                workspace.beginRename()
-                            }
+                        Button("Rename…") {
+                            workspace.beginRename(node.url)
                         }
                         Button("Show in Finder") {
                             NSWorkspace.shared.activateFileViewerSelecting([node.url])
@@ -78,6 +75,11 @@ private struct SidebarView: View {
             }
             .listStyle(.sidebar)
             .searchable(text: $workspace.searchText, placement: .sidebar, prompt: "Search notes")
+            .onKeyPress(.return) {
+                guard workspace.selectedURL != nil else { return .ignored }
+                workspace.beginRename()
+                return .handled
+            }
 
             Divider()
             HStack(spacing: 10) {
@@ -117,7 +119,9 @@ private struct DocumentView: View {
                 SourceEditor(
                     text: Binding(get: { workspace.text }, set: { workspace.textDidChange($0) }),
                     selection: $workspace.selection,
-                    kind: workspace.selectedKind ?? .markdown
+                    kind: workspace.selectedKind ?? .markdown,
+                    documentID: workspace.selectedURL?.path ?? "",
+                    session: workspace.editorSession
                 )
             case .preview:
                 PreviewView(source: workspace.text, kind: workspace.selectedKind ?? .markdown)
@@ -126,7 +130,9 @@ private struct DocumentView: View {
                     SourceEditor(
                         text: Binding(get: { workspace.text }, set: { workspace.textDidChange($0) }),
                         selection: $workspace.selection,
-                        kind: workspace.selectedKind ?? .markdown
+                        kind: workspace.selectedKind ?? .markdown,
+                        documentID: workspace.selectedURL?.path ?? "",
+                        session: workspace.editorSession
                     )
                     .frame(minWidth: 320)
                     PreviewView(source: workspace.text, kind: workspace.selectedKind ?? .markdown)
@@ -230,16 +236,16 @@ private struct MainToolbar: ToolbarContent {
 
     var body: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
-            Button(action: workspace.beginRename) {
+            Button(action: { workspace.beginRename() }) {
                 Label("Rename", systemImage: "pencil")
             }
-            .help("Rename this document")
-            .disabled(workspace.selectedKind == nil)
+            .help("Rename selected item")
+            .disabled(workspace.selectedURL == nil)
 
             Menu {
-                Button("Markdown Note") { workspace.createDocument(kind: .markdown) }
-                Button("HTML Document") { workspace.createDocument(kind: .html) }
-                Button("Folder") { workspace.createFolder() }
+                Button("Markdown Note") { workspace.beginCreateDocument(kind: .markdown) }
+                Button("HTML Document") { workspace.beginCreateDocument(kind: .html) }
+                Button("Folder") { workspace.beginCreateFolder() }
             } label: {
                 Label("New", systemImage: "plus")
             }
@@ -263,10 +269,10 @@ private struct WelcomeView: View {
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 560)
             HStack {
-                Button("New Markdown Note") { workspace.createDocument(kind: .markdown) }
+                Button("New Markdown Note") { workspace.beginCreateDocument(kind: .markdown) }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
-                Button("New HTML Document") { workspace.createDocument(kind: .html) }
+                Button("New HTML Document") { workspace.beginCreateDocument(kind: .html) }
                     .buttonStyle(.bordered)
                     .controlSize(.large)
             }
@@ -277,31 +283,46 @@ private struct WelcomeView: View {
     }
 }
 
-private struct RenameView: View {
+private struct ItemNameSheet: View {
     @EnvironmentObject private var workspace: WorkspaceStore
     @Environment(\.dismiss) private var dismiss
+    @FocusState private var isNameFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Rename Document").font(.headline)
-            TextField("Name", text: $workspace.renameText)
+            Text(workspace.namingIntent?.title ?? "Name Item").font(.headline)
+            TextField("Name", text: $workspace.nameDraft)
                 .textFieldStyle(.roundedBorder)
-                .onSubmit { rename() }
+                .focused($isNameFocused)
+                .onSubmit { submit() }
+            if let hint = workspace.namingHint {
+                Text(hint)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let error = workspace.namingError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
             HStack {
                 Spacer()
-                Button("Cancel") { dismiss() }
-                Button("Rename") { rename() }
+                Button("Cancel") {
+                    workspace.cancelNaming()
+                    dismiss()
+                }
+                Button(workspace.namingIntent?.actionTitle ?? "Save") { submit() }
                     .buttonStyle(.borderedProminent)
-                    .disabled(workspace.renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(workspace.nameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(22)
         .frame(width: 390)
+        .onAppear { isNameFocused = true }
     }
 
-    private func rename() {
-        workspace.finishRename()
-        dismiss()
+    private func submit() {
+        if workspace.confirmNaming() { dismiss() }
     }
 }
 
